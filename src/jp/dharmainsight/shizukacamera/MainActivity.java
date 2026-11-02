@@ -71,6 +71,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         super.onCreate(state);
         secureSession = state != null && state.getBoolean("secureSession", false);
         refreshLaunchSecurity();
+        DiagnosticActivity.recordCameraIntent(this, getIntent());
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setDecorFitsSystemWindows(false);
         prefs = getSharedPreferences("camera", MODE_PRIVATE);
@@ -117,6 +118,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         super.onNewIntent(intent);
         setIntent(intent);
         refreshLaunchSecurity();
+        DiagnosticActivity.recordCameraIntent(this, intent);
     }
 
     private void buildUi() {
@@ -374,8 +376,11 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     }
     private void showAbout() {
         if (protectPersonalContent()) return;
-        new AlertDialog.Builder(this).setTitle("しずかカメラ 1.1.0")
+        new AlertDialog.Builder(this).setTitle("しずかカメラ 1.2.0")
             .setMessage("シャッター音なしで写真を残すカメラです。\n\n・撮影中の映像から写真を保存\n・保存先：DCIM / ShizukaCamera\n・前後カメラ、ズーム、明るさ、タイマー\n・音量キーでも撮影できます\n・自撮り写真は左右反転せず保存\n\n通信・広告・マイク・位置情報は使用しません。画面を離れるとカメラは停止します。\n\n画質と最大解像度は端末により異なります。標準カメラのHDR・夜景処理には対応していません。端末固有の動作音については実機で確認してください。")
+            .setNeutralButton("電源ボタンの起動診断", (dialog, which) -> {
+                if (!protectPersonalContent()) startActivity(new Intent(this, DiagnosticActivity.class));
+            })
             .setPositiveButton("閉じる", null).show();
     }
     private void showGate(String title, String body, String action) {

@@ -58,6 +58,11 @@ public final class CoreTest {
         check(!LaunchPolicy.restricted(false,false,null,false), "Unlocked launcher works");
         check(LaunchPolicy.restricted(false,true,null,false), "Secure Activity cannot be downgraded");
         check(LaunchPolicy.restricted(true,false,null,false), "Unlock keeps session restricted");
-        System.out.println("PASS: " + checks + " assertions (YUV layouts, crop, strides, orientations, focus, zoom, secure launch policy)");
+        check(DiagnosticRules.verdict(false, true, false, false).contains("Manifest"), "Missing standard handler");
+        check(DiagnosticRules.verdict(true, false, false, false).contains("ロック画面"), "Missing secure handler");
+        check(DiagnosticRules.verdict(true, true, false, false).contains("起動テスト"), "Pending self test");
+        check(DiagnosticRules.verdict(true, true, true, false).contains("OSの起動先制限"), "Working intent but no outside delivery");
+        check(DiagnosticRules.verdict(true, true, true, true).contains("断定できません"), "Outside intent is not proof of button event");
+        System.out.println("PASS: " + checks + " assertions (YUV layouts, crop, strides, orientations, focus, zoom, secure launch policy, diagnostic rules)");
     }
 }

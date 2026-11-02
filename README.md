@@ -2,6 +2,20 @@
 
 Pixel 9a向けカメラアプリの保管・調査用リポジトリです。現行アプリの表示名は「しずかカメラ（ShizukaCamera）」で、Androidパッケージ名は `jp.dharmainsight.shizukacamera` です。
 
+## 1.2.0：Pixel上だけで電源ジェスチャーを診断
+
+カメラ右上の **ⓘ → 電源ボタンの起動診断** を開くと、Wi-Fi・PC・ADB不要で次の項目を確認できます。
+
+- 通常・ロック画面カメラ起動Intentの登録状況と起動候補
+- 既定のIntent解決先（実際の電源キーの起動先とは限りません）
+- カメラIntentの自己テスト・外部Intent受信履歴
+- 参照可能なSystemUI設定（取得不可なら未判定）
+- 結果をコピー・共有、履歴をリセット
+
+詳しくは [Pixel単体での起動診断](docs/on-device-diagnostics.md) を参照。
+
+この機能は原因の切り分け用で、電源ボタン2回押しの起動先を強制的に変える機能ではありません。APKの更新インストールには元の署名鍵が必要です。
+
 ## 状況（2026-11-02）
 
 - **通常の起動・撮影**：Pixel 9a実機で動作を確認。
@@ -19,7 +33,7 @@ Pixel 9a向けカメラアプリの保管・調査用リポジトリです。現
 
 ### 開発ソース・APKの扱い
 
-**1.1.0のJavaソースを収録しています。** AndroidManifest.xml、`src/`、`res/`、`tests/`、`build.sh`、`test.sh` は所有者提供の元ソースZIPから復元した原本です。元のZIPとのGit blob SHA一致を全14ファイルで確認済みです。
+**1.1.0のJavaソースを保全し、1.2.0では診断画面・Intent履歴を追加しています。** AndroidManifest.xml、`src/`、`res/`、`tests/`、`build.sh`、`test.sh` は元の1.1.0ソースに由来し、1.2.0に合わせて改修しています。元のZIPとのGit blob SHA一致を全14ファイルで確認済みです。
 
 ```bash
 bash test.sh  # JDK 17等でAndroid SDK不要の単体テスト40件

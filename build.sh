@@ -22,7 +22,7 @@ with zipfile.ZipFile('build/unsigned.apk','a',zipfile.ZIP_DEFLATED) as apk:
     for path in sorted(Path('build/dex').glob('*.dex')): apk.write(path,path.name)
 PY
 "$ANDROID_BUILD_TOOLS/zipalign" -f -p 4 build/unsigned.apk build/aligned.apk
-java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" sign --ks "$SHIZUKA_SIGNING_DIR/shizuka-release.p12" --ks-key-alias shizuka --ks-pass "file:$SHIZUKA_SIGNING_DIR/key.pass" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out dist/ShizukaCamera-1.1.0.apk build/aligned.apk
-java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" verify --verbose dist/ShizukaCamera-1.1.0.apk
-"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 dist/ShizukaCamera-1.1.0.apk
-sha256sum dist/ShizukaCamera-1.1.0.apk
+java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" sign --ks "$SHIZUKA_SIGNING_DIR/shizuka-release.p12" --ks-key-alias shizuka --ks-pass "file:$SHIZUKA_SIGNING_DIR/key.pass" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out dist/ShizukaCamera-1.2.0.apk build/aligned.apk
+java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" verify --verbose dist/ShizukaCamera-1.2.0.apk
+"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 dist/ShizukaCamera-1.2.0.apk
+sha256sum dist/ShizukaCamera-1.2.0.apk
