@@ -1,0 +1,18 @@
+# Private signing keys and passwords must never be committed.
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pass
+private-signing/
+**/private-signing/
+
+# Generated Android outputs and local configuration.
+*.apk
+dist/
+build/
+**/build/
+local.properties
+.gradle/
+.idea/
+*.iml
