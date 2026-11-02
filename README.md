@@ -19,20 +19,23 @@ Pixel 9a向けカメラアプリの保管・調査用リポジトリです。現
 
 ### 開発ソース・APKの扱い
 
-**現時点でこのGitHubリポジトリにビルド可能なオリジナルJava/Kotlinソース、署名秘密鍵、インストール用APKは未登録です。** 今回の引き継ぎ資料は、ユーザー提供のAPKを静的解析して作成したものです。ManifestのXMLは原本のソースコードではありません。APKの所有・配布権限や署名鍵を確認した上で、ソースとバイナリを追加してください。
-
-元のソースZIPを所有者から入手できる場合は、次のスクリプトで**ソースだけ**を取り込めます（既存ファイルを上書きしません）。
+**1.1.0のJavaソースを収録しています。** AndroidManifest.xml、`src/`、`res/`、`tests/`、`build.sh`、`test.sh` は所有者提供の元ソースZIPから復元した原本です。元のZIPとのGit blob SHA一致を全14ファイルで確認済みです。
 
 ```bash
-bash scripts/import-original-source.sh /path/to/ShizukaCamera-1.1.0-source.zip
-bash test.sh
+bash test.sh  # JDK 17等でAndroid SDK不要の単体テスト40件
 ```
 
-元の署名バックアップはZIPとは別に安全に保管してください。リポジトリの `.gitignore` は秘密鍵・パスワードの誤登録を防ぐための補助措置であり、Gitへの追加前にも内容を確認してください。
+更新APKの生成にはAndroid SDK Platform 36、Build-Tools 36.0.0、**元の署名鍵（非公開）** が必要です。端末にインストール済みの1.1.0を上書きするには元の署名鍵を使い、`AndroidManifest.xml`の`versionCode`を増やしてください。詳細は`build.sh`を参照。
 
-今後の更新版APKは同じアプリIDと同じ署名秘密鍵を使用し、バージョンコードを増やして更新インストールできる形で配布することを目標とします。
+**署名鍵、パスワード、APK本体は公開リポジトリに含めません。** `.gitignore`だけに頼らず、Gitへの追加前にも秘密情報がないことを確認してください。
 
-詳しい原因仮説と判断基準、設定を変更しない診断方法、クイックタップの代替手順は [docs/pixel-9a-gesture-diagnosis.md](docs/pixel-9a-gesture-diagnosis.md) を参照してください。
+### 電源ボタン2回押しで起動しない問題
+
+アプリ側には通常の`STILL_IMAGE_CAMERA`とロック画面用`STILL_IMAGE_CAMERA_SECURE`のIntent登録があります。しかしSystemUI側で起動先パッケージが制限されている場合、アプリのManifest修正だけでは解決できません。
+
+詳しい判定基準は [Pixel 9a電源ジェスチャー診断](docs/pixel-9a-gesture-diagnosis.md)。Androidの公式資料では `config_cameraGesturePackage` により起動対象が指定される場合があると説明されています。**Pixel 9a実機の設定値は未取得、原因未確定です。**
+
+暫定の確実な代替操作は、Pixelの「背面クイックタップ → アプリを開く → しずかカメラ」です。これは電源ボタン2回押しとは異なります。
 
 ## 次の検証
 
