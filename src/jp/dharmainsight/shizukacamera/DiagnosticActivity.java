@@ -116,7 +116,7 @@ public final class DiagnosticActivity extends Activity {
         section("電源ボタン2回押しの確認手順",
             "①『履歴をリセット』してからホーム画面に戻る。\n"
           + "② 電源ボタンを2回押し、起動するアプリを見る。\n"
-          + "③ しずかカメラを通常起動し、この画面に戻って『外部Intent受信』の履歴を確認する。\n"
+          + "③ SantiCamを通常起動し、この画面に戻って『外部Intent受信』の履歴を確認する。\n"
           + "④ 結果をコピーして報告する。ロック画面では初回権限付与を行わない。\n\n"
           + "※『外部Intent受信』は他アプリからの起動も含むため、電源ボタン由来と断定できません。\n"
           + "※ OSが電源ジェスチャーを特定パッケージへ固定している場合、アプリから解除はできません。"
@@ -150,7 +150,7 @@ public final class DiagnosticActivity extends Activity {
             .append("外部Intent受信（通常）: ").append(when(history, "outside.normal")).append("\n")
             .append("外部Intent受信（ロック画面）: ").append(when(history, "outside.secure"));
         String systemUi = systemUiResource(pm);
-        String full = "SantiCam 1.2.0 / Pixel起動診断\n\n判定: " + verdict
+        String full = "SantiCam 1.3.0 / Pixel起動診断\n\n判定: " + verdict
             + "\n\n" + details + "\n\nSystemUI: " + systemUi
             + "\n\n※ 通常アプリでは電源キーイベントの発生やSystemUI内部設定の全体は確定できません。";
         return new Report(verdict, details.toString(), systemUi, full);

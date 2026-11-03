@@ -57,7 +57,9 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     private LinearLayout gate, exposureRow, footer;
     private IconButton gridButton, torchButton, switchButton, galleryButton, shutter;
     private TextView[] zoomButtons;
-    private SeekBar exposure;
+    private SeekBar exposure, zoomSlider;
+    private boolean videoActive, shutterHeld, longPressConsumed;
+    private float shutterY, shutterZoom;
     private OrientationEventListener orientationListener;
     private CameraEngine.Info info;
     private boolean resumed, starting, ready, front, busy, torch, grid;
@@ -66,6 +68,12 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     private boolean secureSession;
     private Uri lastPhoto;
     private Bitmap lastThumbnail;
+
+    private final Runnable beginHoldVideo = () -> {
+        if (!shutterHeld || !ready || busy) return;
+        longPressConsumed = true;
+        beginVideo();
+    };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -132,7 +140,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
 
         LinearLayout header = row(); header.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout titleStack = new LinearLayout(this); titleStack.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text("しずか", 27, WHITE); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView title = text("SantiCam", 27, WHITE); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         TextView subtitle = text("S I L E N T   C A M E R A", 9, MUTED);
         titleStack.addView(title); titleStack.addView(subtitle);
         header.addView(titleStack, new LinearLayout.LayoutParams(0, -2, 1));
@@ -201,9 +209,36 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         for (int i = 0; i < 3; i++) {
             float value = factors[i]; TextView button = chip((int) value + "×"); zoomButtons[i] = button;
             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(60), dp(42)); p.setMargins(dp(4), 0, dp(4), 0); zoomRow.addView(button, p);
-            button.setOnClickListener(v -> { if (!busy) setZoom(value); }); button.setContentDescription((int) value + "倍ズーム");
+            button.setOnClickListener(v -> setZoom(value));
+            button.setOnTouchListener(new View.OnTouchListener() {
+                float downX, initialZoom; boolean moved;
+                public boolean onTouch(View v, MotionEvent event) {
+                    switch (event.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            downX = event.getRawX(); initialZoom = zoom; moved = false; return true;
+                        case MotionEvent.ACTION_MOVE:
+                            float delta = event.getRawX() - downX;
+                            if (Math.abs(delta) > android.view.ViewConfiguration.get(MainActivity.this).getScaledTouchSlop()) moved = true;
+                            if (moved) setZoom(GestureMath.dragZoom(initialZoom, delta / getResources().getDisplayMetrics().density, info.maxZoom));
+                            return true;
+                        case MotionEvent.ACTION_UP: if (!moved) v.performClick(); return true;
+                        case MotionEvent.ACTION_CANCEL: return true;
+                    }
+                    return true;
+                }
+            }); button.setContentDescription((int) value + "倍ズーム");
         }
-        root.addView(zoomRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        root.addView(zoomRow, new LinearLayout.LayoutParams(-1, dp(48)));
+        zoomSlider = new SeekBar(this); zoomSlider.setMax(1000);
+        zoomSlider.setContentDescription("ズーム倍率");
+        zoomSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (fromUser && info != null) setZoom(GestureMath.sliderZoom(progress, info.maxZoom));
+            }
+            public void onStartTrackingTouch(SeekBar bar) {}
+            public void onStopTrackingTouch(SeekBar bar) {}
+        });
+        root.addView(zoomSlider, new LinearLayout.LayoutParams(-1, dp(32)));
 
         exposureRow = row(); exposureRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView brightness = text("明るさ", 11, MUTED); exposureRow.addView(brightness);
@@ -225,7 +260,34 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         galleryButton = new IconButton("gallery", "最後に撮った写真を開く"); galleryButton.setOnClickListener(v -> openPhoto());
         controls.addView(galleryButton, new LinearLayout.LayoutParams(dp(58), dp(58)));
         View leftSpace = new View(this); controls.addView(leftSpace, new LinearLayout.LayoutParams(0, 1, 1));
-        shutter = new IconButton("shutter", "写真を撮る"); shutter.setOnClickListener(v -> capture());
+        shutter = new IconButton("shutter", "写真を撮る"); shutter.setOnClickListener(v -> { if (videoActive) endVideo(); else capture(); });
+        shutter.setContentDescription("短押しで写真、長押しで動画。上下でズーム、離して保存");
+        shutter.setOnLongClickListener(v -> { if (!videoActive) beginVideo(); return true; });
+        shutter.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (videoActive) { endVideo(); return true; }
+                    shutterHeld = true; longPressConsumed = false;
+                    shutterY = event.getRawY(); shutterZoom = zoom;
+                    ui.postDelayed(beginHoldVideo, android.view.ViewConfiguration.getLongPressTimeout());
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (videoActive && shutterHeld && info != null)
+                        setZoom(GestureMath.dragZoom(shutterZoom, (shutterY - event.getRawY()) / getResources().getDisplayMetrics().density, info.maxZoom));
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    ui.removeCallbacks(beginHoldVideo);
+                    boolean click = shutterHeld && !longPressConsumed;
+                    shutterHeld = false;
+                    if (videoActive) endVideo(); else if (click) v.performClick();
+                    return true;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                case MotionEvent.ACTION_CANCEL:
+                    ui.removeCallbacks(beginHoldVideo); shutterHeld = false; longPressConsumed = true;
+                    if (videoActive) endVideo(); return true;
+            }
+            return true;
+        });
         controls.addView(shutter, new LinearLayout.LayoutParams(dp(90), dp(90)));
         View rightSpace = new View(this); controls.addView(rightSpace, new LinearLayout.LayoutParams(0, 1, 1));
         switchButton = new IconButton("switch", "前後カメラを切り替え"); switchButton.setOnClickListener(v -> {
@@ -248,6 +310,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         super.onResume(); refreshLaunchSecurity(); resumed = true; starting = false; orientationListener.enable(); tryStart();
     }
     @Override protected void onPause() {
+        ui.removeCallbacks(beginHoldVideo); shutterHeld = false; videoActive = false; busy = false;
         resumed = false; ready = starting = false; cancelCountdown(); orientationListener.disable(); engine.stop(); updateControls(); super.onPause();
         if (secureSession) finish();
     }
@@ -261,7 +324,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         if (!resumed || starting) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             if (secureSession) {
-                showGate("最初にロックを解除してください", "ホーム画面からしずかカメラを開き、カメラの使用を許可してください。", null); return;
+                showGate("最初にロックを解除してください", "ホーム画面からSantiCamを開き、カメラの使用を許可してください。", null); return;
             }
             showGate("カメラを使えるようにする", "撮影のため、カメラの使用を許可してください。\n写真は端末内に保存されます。", "カメラを許可"); return;
         }
@@ -282,6 +345,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     }
     @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(code, permissions, grants);
+        if (code == 11) { toast("もう一度長押ししてください。マイク未許可の場合は無音で録画します"); return; }
         if (code == 10) {
             starting = false;
             if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) tryStart();
@@ -303,7 +367,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
 
     @Override public void onStatus(String message, boolean error) {
         if (!resumed || isDestroyed()) return;
-        if (error) { ready = starting = false; cancelCountdown(); busy = false; }
+        if (error) { ui.removeCallbacks(beginHoldVideo); shutterHeld = false; videoActive = false; ready = starting = false; cancelCountdown(); busy = false; }
         if (!ready || error) showGate(error ? "カメラを確認してください" : message, error ? message : "", error ? "再接続" : null);
         status.setText(message); updateControls();
     }
@@ -319,8 +383,45 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
             lastPhoto = uri;
             if (lastThumbnail != null) lastThumbnail.recycle(); lastThumbnail = thumbnail; galleryButton.invalidate();
         }
-        status.setText("保存しました · DCIM / ShizukaCamera");
+        status.setText("保存しました · DCIM / SantiCam");
         if (resumed) { overlay.savedUntil = System.currentTimeMillis() + 220; overlay.invalidate(); ui.postDelayed(() -> overlay.invalidate(), 250); }
+    }
+
+    private void beginVideo() {
+        if (!ready || busy || videoActive) return;
+        boolean audio = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        if (!audio && !secureSession && !prefs.getBoolean("audioAsked", false)) {
+            prefs.edit().putBoolean("audioAsked", true).apply();
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 11); return;
+        }
+        videoActive = true; busy = true;
+        status.setText(audio ? "動画を準備中… 離して終了" : "無音動画を準備中… 離して終了");
+        updateControls(); engine.startVideo(deviceOrientation, audio);
+    }
+    private void endVideo() {
+        videoActive = false; ready = false;
+        status.setText("動画を保存しています…"); updateControls(); engine.stopVideo();
+    }
+    @Override public void onRecordingStarted(CameraEngine.Info value) {
+        if (!resumed || !videoActive) return;
+        float ratio = (float) value.width / value.height;
+        stage.aspect = value.sensorRotation % 180 == 0 ? ratio : 1 / ratio; stage.requestLayout();
+        status.setText("● 録画中 · 上で拡大／下で縮小 · 離して保存");
+        resolution.setText("REC · " + value.width + " × " + value.height);
+        shutter.invalidate();
+    }
+    @Override public void onVideo(Uri uri, String error) {
+        videoActive = false; busy = false; updateControls();
+        if (error != null) { if (resumed) toast(error); status.setText(error); return; }
+        if (uri != null) {
+            if (!protectPersonalContent()) {
+                lastPhoto = uri;
+                if (lastThumbnail != null) lastThumbnail.recycle(); lastThumbnail = null;
+                prefs.edit().putString("lastPhoto", uri.toString()).apply(); galleryButton.invalidate();
+            }
+            status.setText("動画を保存しました · DCIM / SantiCam");
+            if (resumed) toast("動画を保存しました");
+        }
     }
 
     private void capture() {
@@ -346,21 +447,25 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         countdownRemaining = 0; if (overlay != null) { overlay.countdown = 0; overlay.invalidate(); } updateControls();
     }
     private void setZoom(float value) {
-        if (!ready || info == null || busy) return;
+        if (!ready || info == null || (busy && !videoActive)) return;
         zoom = CameraMath.clamp(value, 1, info.maxZoom); engine.setZoom(zoom); updateControls();
     }
     private void updateControls() {
         if (shutter == null) return;
         galleryButton.setVisibility(secureSession ? View.INVISIBLE : View.VISIBLE);
-        shutter.setEnabled(ready && (!busy || countdownRemaining > 0));
+        shutter.setEnabled(ready && (!busy || videoActive || countdownRemaining > 0));
         shutter.busy = busy; shutter.invalidate();
         switchButton.setEnabled(ready && !busy && info != null && info.switchable);
         torchButton.setEnabled(ready && !busy && info != null && info.flash);
         exposure.setEnabled(ready && !busy && info != null && info.maxEv > info.minEv);
         timerButton.setEnabled(!busy);
+        if (zoomSlider != null) {
+            zoomSlider.setEnabled(ready && (!busy || videoActive) && info != null && info.maxZoom > 1);
+            zoomSlider.setProgress(info == null ? 0 : GestureMath.sliderProgress(zoom, info.maxZoom));
+        }
         if (zoomButtons != null) for (int i = 0; i < zoomButtons.length; i++) {
             float value = 1 << i; boolean active = Math.abs(zoom - value) < .04;
-            TextView b = zoomButtons[i]; b.setEnabled(ready && !busy && info != null && info.maxZoom >= value);
+            TextView b = zoomButtons[i]; b.setEnabled(ready && (!busy || videoActive) && info != null && info.maxZoom >= value);
             b.setTextColor(active ? BACKGROUND : MUTED); b.setBackground(ripple(active ? ACCENT : PANEL, 24));
             b.setAlpha(b.isEnabled() ? 1 : .38f);
             if (i == 0) b.setText(Math.abs(zoom - 1) > .04 && Math.abs(zoom - 2) > .04 && Math.abs(zoom - 4) > .04 ? String.format(Locale.US, "%.1f×", zoom) : "1×");
@@ -371,13 +476,13 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         if (protectPersonalContent()) { toast("写真を見るにはロックを解除し、ホーム画面から開き直してください"); return; }
         if (busy) return;
         if (lastPhoto == null) { toast("撮影した写真がここに表示されます"); return; }
-        Intent intent = new Intent(Intent.ACTION_VIEW).setDataAndType(lastPhoto, "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        try { startActivity(intent); } catch (ActivityNotFoundException | SecurityException e) { toast("フォトアプリで DCIM / ShizukaCamera を開いてください"); }
+        Intent intent = new Intent(Intent.ACTION_VIEW).setDataAndType(lastPhoto, getContentResolver().getType(lastPhoto)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try { startActivity(intent); } catch (ActivityNotFoundException | SecurityException e) { toast("フォトアプリで DCIM / SantiCam を開いてください"); }
     }
     private void showAbout() {
         if (protectPersonalContent()) return;
-        new AlertDialog.Builder(this).setTitle("しずかカメラ 1.2.0")
-            .setMessage("シャッター音なしで写真を残すカメラです。\n\n・撮影中の映像から写真を保存\n・保存先：DCIM / ShizukaCamera\n・前後カメラ、ズーム、明るさ、タイマー\n・音量キーでも撮影できます\n・自撮り写真は左右反転せず保存\n\n通信・広告・マイク・位置情報は使用しません。画面を離れるとカメラは停止します。\n\n画質と最大解像度は端末により異なります。標準カメラのHDR・夜景処理には対応していません。端末固有の動作音については実機で確認してください。")
+        new AlertDialog.Builder(this).setTitle("SantiCam 1.3.0")
+            .setMessage("シャッター音なしで写真を残すカメラです。\n\n・撮影中の映像から写真を保存\n・保存先：DCIM / SantiCam\n・前後カメラ、ズーム、明るさ、タイマー\n・短押しで写真、長押しで動画、離して保存\n・動画中は上下スワイプでズーム\n・倍率ボタンの左右スライド／スライダーでズーム\n・音量キーでも撮影できます\n・自撮り写真は左右反転せず保存\n\n通信・広告・位置情報は使用しません。動画の音声にはマイクの許可が必要です。未許可なら無音で録画します。画面を離れるとカメラは停止します。\n\n画質と最大解像度は端末により異なります。標準カメラのHDR・夜景処理には対応していません。端末固有の動作音については実機で確認してください。")
             .setNeutralButton("電源ボタンの起動診断", (dialog, which) -> {
                 if (!protectPersonalContent()) startActivity(new Intent(this, DiagnosticActivity.class));
             })
@@ -464,7 +569,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
                 p.setFilterBitmap(true); canvas.drawBitmap(lastThumbnail, null, new RectF((w - tw) / 2, (h - th) / 2, (w + tw) / 2, (h + th) / 2), p); canvas.restoreToCount(save); return;
             }
             if (icon.equals("shutter")) {
-                p.setColor(busy ? ACCENT : WHITE); p.setStrokeWidth(dp(3)); p.setStyle(Paint.Style.STROKE); canvas.drawCircle(w / 2, h / 2, Math.min(w, h) / 2 - dp(5), p); p.setStyle(Paint.Style.FILL);
+                p.setColor(videoActive ? 0xFFFF5252 : busy ? ACCENT : WHITE); p.setStrokeWidth(dp(3)); p.setStyle(Paint.Style.STROKE); canvas.drawCircle(w / 2, h / 2, Math.min(w, h) / 2 - dp(5), p); p.setStyle(Paint.Style.FILL);
                 if (busy) canvas.drawRoundRect(w / 2 - dp(13), h / 2 - dp(13), w / 2 + dp(13), h / 2 + dp(13), dp(5), dp(5), p);
                 else canvas.drawCircle(w / 2, h / 2, Math.min(w, h) / 2 - dp(12), p); return;
             }
