@@ -21,6 +21,6 @@ with zipfile.ZipFile('build/unsigned.apk', 'a', zipfile.ZIP_DEFLATED) as apk:
     for path in sorted(Path('build/dex').glob('*.dex')):
         apk.write(path, path.name)
 PY
-"$ANDROID_BUILD_TOOLS/zipalign" -f -p 4 build/unsigned.apk dist/ShizukaCamera-1.2.0-unsigned.apk
-"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 dist/ShizukaCamera-1.2.0-unsigned.apk
-sha256sum dist/ShizukaCamera-1.2.0-unsigned.apk
+"$ANDROID_BUILD_TOOLS/zipalign" -f -p 4 build/unsigned.apk dist/SantiCam-1.3.0-unsigned.apk
+"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 dist/SantiCam-1.3.0-unsigned.apk
+sha256sum dist/SantiCam-1.3.0-unsigned.apk
