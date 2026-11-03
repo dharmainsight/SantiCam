@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+APP_VERSION="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' AndroidManifest.xml | head -n 1)"
+[[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid AndroidManifest versionName" >&2; exit 1; }
+SIGNED_APK="dist/SantiCam-${APP_VERSION}.apk"
 : "${ANDROID_JAR:=${ANDROID_HOME:-}/platforms/android-36/android.jar}"
 : "${ANDROID_BUILD_TOOLS:=${ANDROID_HOME:-}/build-tools/36.0.0}"
 : "${SHIZUKA_SIGNING_DIR:=../private-signing}"
 test -f "$ANDROID_JAR" || { echo "Set ANDROID_JAR or install SDK platform 36." >&2; exit 1; }
 test -f "$ANDROID_BUILD_TOOLS/lib/d8.jar" || { echo "Set ANDROID_BUILD_TOOLS to build-tools 36.0.0." >&2; exit 1; }
 test -f "$SHIZUKA_SIGNING_DIR/shizuka-release.p12" || { echo "Set SHIZUKA_SIGNING_DIR to the original private signing backup." >&2; exit 1; }
+test -f "$SHIZUKA_SIGNING_DIR/key.pass" || { echo "Original signing password file not found." >&2; exit 1; }
 mkdir -p build/compiled build/generated build/classes build/dex dist
 "$ANDROID_BUILD_TOOLS/aapt2" compile --dir res -o build/resources.zip
 "$ANDROID_BUILD_TOOLS/aapt2" link -I "$ANDROID_JAR" --manifest AndroidManifest.xml --java build/generated --min-sdk-version 31 --target-sdk-version 36 -o build/resources.apk build/resources.zip
@@ -22,7 +26,7 @@ with zipfile.ZipFile('build/unsigned.apk','a',zipfile.ZIP_DEFLATED) as apk:
     for path in sorted(Path('build/dex').glob('*.dex')): apk.write(path,path.name)
 PY
 "$ANDROID_BUILD_TOOLS/zipalign" -f -p 4 build/unsigned.apk build/aligned.apk
-java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" sign --ks "$SHIZUKA_SIGNING_DIR/shizuka-release.p12" --ks-key-alias shizuka --ks-pass "file:$SHIZUKA_SIGNING_DIR/key.pass" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out dist/SantiCam-1.3.0.apk build/aligned.apk
-java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" verify --verbose dist/SantiCam-1.3.0.apk
-"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 dist/SantiCam-1.3.0.apk
-sha256sum dist/SantiCam-1.3.0.apk
+java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" sign --ks "$SHIZUKA_SIGNING_DIR/shizuka-release.p12" --ks-key-alias shizuka --ks-pass "file:$SHIZUKA_SIGNING_DIR/key.pass" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out $SIGNED_APK build/aligned.apk
+java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" verify --verbose $SIGNED_APK
+"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 $SIGNED_APK
+sha256sum $SIGNED_APK

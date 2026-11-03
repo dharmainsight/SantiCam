@@ -2,6 +2,9 @@
 # Build an unsigned APK for compilation verification. It CANNOT be installed as an update.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+APP_VERSION="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' AndroidManifest.xml | head -n 1)"
+[[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid AndroidManifest versionName" >&2; exit 1; }
+UNSIGNED_APK="dist/SantiCam-${APP_VERSION}-unsigned.apk"
 : "${ANDROID_JAR:=${ANDROID_HOME:-}/platforms/android-36/android.jar}"
 : "${ANDROID_BUILD_TOOLS:=${ANDROID_HOME:-}/build-tools/36.0.0}"
 test -f "$ANDROID_JAR" || { echo "Set ANDROID_JAR or install SDK platform 36." >&2; exit 1; }
@@ -21,6 +24,6 @@ with zipfile.ZipFile('build/unsigned.apk', 'a', zipfile.ZIP_DEFLATED) as apk:
     for path in sorted(Path('build/dex').glob('*.dex')):
         apk.write(path, path.name)
 PY
-"$ANDROID_BUILD_TOOLS/zipalign" -f -p 4 build/unsigned.apk dist/SantiCam-1.3.0-unsigned.apk
-"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 dist/SantiCam-1.3.0-unsigned.apk
-sha256sum dist/SantiCam-1.3.0-unsigned.apk
+"$ANDROID_BUILD_TOOLS/zipalign" -f -p 4 build/unsigned.apk $UNSIGNED_APK
+"$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 $UNSIGNED_APK
+sha256sum $UNSIGNED_APK
