@@ -20,6 +20,23 @@ Pixel 9a向けカメラアプリの保管・調査用リポジトリです。現
 実機では短押し／長押し、準備直後の解放、上下ズーム、マイク許可・拒否、ホーム移動、動画再生、セキュア起動を確認すること。
 更新APKは`bash build.sh`で元の非公開署名鍵を使って生成。未署名CI成果物はインストール不可。
 
+## 署名済みAPKの生成とPixel 9aへの上書き更新
+
+**更新用APKはGitHub Actionsの手動実行で生成します。** 通常の `Android compile and unit tests` が作る未署名APKはインストールできません。既存1.2.0を更新するには、旧版と同じ署名鍵が必須です。
+
+1. 最新コードと `.github/workflows/signed-update.yml` を `main` にマージしておきます。
+2. GitHubのリポジトリ **Settings → Secrets and variables → Actions → New repository secret** で、次の2つを登録します（秘密鍵やパスワードはGit/issue/チャットに貼らないこと）。
+   - `SANTICAM_KEYSTORE_B64`：以前の更新で使った **元の** `shizuka-release.p12` のBase64文字列。Linuxなら `base64 -w0 shizuka-release.p12`、PowerShellなら `[Convert]::ToBase64String([IO.File]::ReadAllBytes('shizuka-release.p12'))` で生成。
+   - `SANTICAM_KEYSTORE_PASSWORD`：以前の `key.pass` の内容（パスワードそのもの）。
+3. GitHub **Actions → Build signed Android update APK → Run workflow → Branch: main → Run workflow** を選びます。
+4. 実行が成功したら、その実行画面の **Artifacts → `SantiCam-1.3.0-signed-update`** をダウンロード。ZIPを解凍し、中の `SantiCam-1.3.0.apk` をPixelへ保存します（新しい版ではファイル名が自動更新されます）。
+5. Pixelの「Files」からAPKを開いて **更新／インストール** を選びます。**旧版をアンインストールしないでください。** 未知のアプリのインストール許可を求められた場合は、信頼できる取得元であることを確認して許可します。
+
+署名ジョブは `main` の手動実行に限定し、PRには鍵を渡しません。ジョブ内の秘密鍵は一時領域に復元して終了時に削除します。元の署名証明書SHA-256（`2048e9fb...`）およびパッケージID・versionCodeを検証し、不一致ならアップロードを中止します。APKはActions成果物に30日間保管されますが、Gitの履歴には含めません。
+
+ローカルで署名する場合はAndroid SDK 36、Build-Tools 36.0.0、元の署名鍵バックアップを準備し、`SHIZUKA_SIGNING_DIR=/path/to/private-signing bash build.sh` を実行してください。署名鍵バックアップが失われた場合、現行アプリをそのまま上書き更新できません。新しい鍵を無断で作って置き換えないでください。
+
+**1.3.0のPixel実機動作（録画、ズーム、マイク、保存、ロック画面）は未検証です。** APK生成とインストール可否とは別に実機で確認します。
 ## 1.2.0：Pixel上だけで電源ジェスチャーを診断
 
 カメラ右上の **ⓘ → 電源ボタンの起動診断** を開くと、Wi-Fi・PC・ADB不要で次の項目を確認できます。

@@ -30,6 +30,6 @@ jobs:
       - name: Upload unsigned APK (not installable)
         uses: actions/upload-artifact@v4
         with:
-          name: SantiCam-1.3.0-unsigned
-          path: dist/SantiCam-1.3.0-unsigned.apk
+          name: SantiCam-unsigned-not-installable
+          path: dist/SantiCam-*-unsigned.apk
           retention-days: 2
