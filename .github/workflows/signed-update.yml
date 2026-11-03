@@ -1,0 +1,76 @@
+name: Build signed Android update APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-update:
+    # Never expose signing secrets to pull_request builds or feature branches.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK platform and build tools
+        run: |
+          set -euo pipefail
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          fi
+          "$SDKMANAGER" --install 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Test, build and sign with the original private key
+        env:
+          SANTICAM_KEYSTORE_B64: ${{ secrets.SANTICAM_KEYSTORE_B64 }}
+          SANTICAM_KEYSTORE_PASSWORD: ${{ secrets.SANTICAM_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SANTICAM_KEYSTORE_B64" || -z "$SANTICAM_KEYSTORE_PASSWORD" ]]; then
+            echo '::error::Configure SANTICAM_KEYSTORE_B64 and SANTICAM_KEYSTORE_PASSWORD in repository Actions secrets.'
+            exit 1
+          fi
+          export SHIZUKA_SIGNING_DIR="$(mktemp -d)"
+          trap 'rm -rf "$SHIZUKA_SIGNING_DIR"' EXIT
+          printf '%s' "$SANTICAM_KEYSTORE_B64" | base64 --decode > "$SHIZUKA_SIGNING_DIR/shizuka-release.p12"
+          printf '%s' "$SANTICAM_KEYSTORE_PASSWORD" > "$SHIZUKA_SIGNING_DIR/key.pass"
+          chmod 600 "$SHIZUKA_SIGNING_DIR/shizuka-release.p12" "$SHIZUKA_SIGNING_DIR/key.pass"
+          bash test.sh
+          bash build.sh
+      - name: Verify update compatibility
+        id: apk
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' AndroidManifest.xml | head -n 1)"
+          VERSION_CODE="$(sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' AndroidManifest.xml | head -n 1)"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] && (( VERSION_CODE > 3 ))
+          APK="dist/SantiCam-${VERSION}.apk"
+          test -s "$APK"
+          APK_INFO="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK")"
+          CERT_SHA="$(printf '%s\n' "$APK_INFO" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr '[:upper:]' '[:lower:]')"
+          EXPECTED_CERT='2048e9fb749d0b68b9153f8cf290d94efff0a9b5e6bb0ea5fa9db1bab622bbfe'
+          if [[ "$CERT_SHA" != "$EXPECTED_CERT" ]]; then
+            echo '::error::APK signing certificate does not match the original SantiCam certificate.'
+            exit 1
+          fi
+          PACKAGE_INFO="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK")"
+          printf '%s\n' "$PACKAGE_INFO" | grep -F "name='jp.dharmainsight.shizukacamera'" | grep -F "versionCode='${VERSION_CODE}'" | grep -F "versionName='${VERSION}'"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          sha256sum "$APK"
+      - name: Upload installable update APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SantiCam-${{ steps.apk.outputs.version }}-signed-update
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30

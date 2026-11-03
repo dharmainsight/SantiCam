@@ -22,6 +22,7 @@ import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ExifInterface;
 import android.media.Image;
+import android.media.MediaRecorder;
 import android.media.ImageReader;
 import android.net.Uri;
 import android.os.Handler;
@@ -50,6 +51,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class CameraEngine {
     interface Listener {
         void onReady(Info info);
+        void onRecordingStarted(Info info);
+        void onVideo(Uri uri, String error);
         void onStatus(String text, boolean error);
         void onPhoto(Uri uri, Bitmap thumbnail, String error);
     }
@@ -69,7 +72,7 @@ final class CameraEngine {
     private final Context context;
     private final Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final HandlerThread thread = new HandlerThread("ShizukaCamera");
+    private final HandlerThread thread = new HandlerThread("SantiCam");
     private final Handler worker;
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private final AtomicBoolean saving = new AtomicBoolean();
@@ -89,6 +92,10 @@ final class CameraEngine {
     private boolean front, flashAvailable, switchable, frameSeen, torch;
     private Size frameSize;
     private volatile boolean destroyed;
+    private MediaRecorder recorder;
+    private ParcelFileDescriptor videoFile;
+    private Uri videoUri;
+    private boolean recording;
 
     CameraEngine(Context context, Listener listener) {
         this.context = context.getApplicationContext(); this.listener = listener;
@@ -208,7 +215,8 @@ final class CameraEngine {
             request.addTarget(previewSurface); request.addTarget(reader.getSurface());
             request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
             request.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-            request.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+            request.set(CaptureRequest.FLASH_MODE, torch ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_OFF);
+            request.set(CaptureRequest.SCALER_CROP_REGION, crop);
             setContinuousFocus();
             Range<Integer>[] ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
             if (ranges != null) {
@@ -280,6 +288,113 @@ final class CameraEngine {
                 }
             }, 4000);
         });
+    }
+
+    // All recorder/session state is confined to the camera worker.
+    void startVideo(int orientation, boolean audio) {
+        if (destroyed) return;
+        worker.post(() -> {
+            if (device == null || !frameSeen || recorder != null || saving.get()) {
+                videoResult(null, "カメラの準備を待ってください"); return;
+            }
+            int token = generation;
+            closeSession();
+            int configToken = configuration;
+            try {
+                StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                Size[] sizes = map.getOutputSizes(MediaRecorder.class);
+                Size[] previews = map.getOutputSizes(SurfaceTexture.class);
+                if (sizes == null || previews == null) throw new IOException("No video stream");
+                Size size = Arrays.stream(sizes)
+                    .filter(v -> v.getWidth() <= 1920 && v.getHeight() <= 1080 && Arrays.asList(previews).contains(v))
+                    .max(Comparator.comparingLong(v -> (long) v.getWidth() * v.getHeight()))
+                    .orElseThrow(() -> new IllegalStateException("No compatible video size"));
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Video.Media.DISPLAY_NAME, "SANTICAM_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date()) + ".mp4");
+                values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                values.put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/SantiCam");
+                values.put(MediaStore.Video.Media.IS_PENDING, 1);
+                videoUri = context.getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                if (videoUri == null) throw new IOException("No video output");
+                videoFile = context.getContentResolver().openFileDescriptor(videoUri, "rw");
+                if (videoFile == null) throw new IOException("No video descriptor");
+                recorder = new MediaRecorder(context);
+                if (audio) recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
+                recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+                if (audio) { recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC); recorder.setAudioEncodingBitRate(128000); recorder.setAudioSamplingRate(44100); }
+                recorder.setVideoSize(size.getWidth(), size.getHeight());
+                recorder.setVideoFrameRate(30); recorder.setVideoEncodingBitRate(10000000);
+                recorder.setOrientationHint(CameraMath.jpegRotation(sensorRotation, orientation, front));
+                recorder.setOutputFile(videoFile.getFileDescriptor());
+                recorder.setOnErrorListener((r, what, extra) -> { if (r == recorder) finishVideo(true, "動画の録画を継続できませんでした"); });
+                recorder.prepare();
+                texture.setDefaultBufferSize(size.getWidth(), size.getHeight());
+                previewSurface = new Surface(texture);
+                Surface videoSurface = recorder.getSurface();
+                request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                request.addTarget(previewSurface); request.addTarget(videoSurface);
+                request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                request.set(CaptureRequest.SCALER_CROP_REGION, crop);
+                request.set(CaptureRequest.FLASH_MODE, torch ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_OFF);
+                int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                if (has(modes, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)) request.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+                frameSize = size;
+                device.createCaptureSession(Arrays.asList(previewSurface, videoSurface), new CameraCaptureSession.StateCallback() {
+                    @Override public void onConfigured(CameraCaptureSession configured) {
+                        if (token != generation || configToken != configuration || recorder == null) { configured.close(); return; }
+                        session = configured;
+                        try {
+                            repeat(); recorder.start(); recording = true;
+                            Info info = new Info(size, sensorRotation, front, flashAvailable, switchable, maxZoom, 0, 0);
+                            main.post(() -> { if (!destroyed) listener.onRecordingStarted(info); });
+                        } catch (CameraAccessException | RuntimeException e) { finishVideo(true, "動画を開始できませんでした"); }
+                    }
+                    @Override public void onConfigureFailed(CameraCaptureSession failed) {
+                        failed.close();
+                        if (token == generation && configToken == configuration) finishVideo(true, "動画の設定に対応していません");
+                    }
+                }, worker);
+                worker.postDelayed(() -> {
+                    if (token == generation && configToken == configuration && !recording && recorder != null)
+                        finishVideo(true, "動画の準備がタイムアウトしました");
+                }, 7000);
+            } catch (IOException | CameraAccessException | RuntimeException e) { finishVideo(true, "動画を開始できませんでした。空き容量と権限を確認してください"); }
+        });
+    }
+
+    void stopVideo() { if (!destroyed) worker.post(() -> { if (recorder != null || videoUri != null) finishVideo(true, null); }); }
+
+    private void finishVideo(boolean restart, String error) {
+        Uri result = videoUri;
+        boolean valid = recording;
+        if (session != null) try { session.stopRepeating(); session.abortCaptures(); } catch (CameraAccessException | RuntimeException ignored) {}
+        if (recorder != null) {
+            if (recording) try { recorder.stop(); } catch (RuntimeException e) { valid = false; error = "録画が短すぎるか、動画を保存できませんでした"; }
+            try { recorder.release(); } catch (RuntimeException ignored) {}
+        }
+        recorder = null; recording = false; videoUri = null;
+        if (videoFile != null) try { videoFile.close(); } catch (IOException ignored) {}
+        videoFile = null;
+        if (result != null) {
+            try {
+                if (valid && error == null) {
+                    ContentValues publish = new ContentValues(); publish.put(MediaStore.Video.Media.IS_PENDING, 0);
+                    if (context.getContentResolver().update(result, publish, null, null) != 1) throw new IOException("Publish failed");
+                } else { context.getContentResolver().delete(result, null, null); result = null; }
+            } catch (IOException | RuntimeException e) {
+                try { context.getContentResolver().delete(result, null, null); } catch (RuntimeException ignored) {}
+                result = null; error = "動画を保存できませんでした";
+            }
+        }
+        closeSession();
+        videoResult(result, error == null && result == null ? "録画開始前に中止しました" : error);
+        if (restart && device != null && !destroyed) configure(generation);
+    }
+
+    private void videoResult(Uri uri, String error) {
+        main.post(() -> { if (!destroyed) listener.onVideo(uri, error); });
     }
 
     void setZoom(float value) {
@@ -371,9 +486,9 @@ final class CameraEngine {
         try {
             long now = System.currentTimeMillis();
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, "SHIZUKA_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date(now)) + ".jpg");
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "SANTICAM_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date(now)) + ".jpg");
             values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            values.put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/ShizukaCamera");
+            values.put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/SantiCam");
             values.put(MediaStore.Images.Media.DATE_TAKEN, now);
             values.put(MediaStore.Images.Media.IS_PENDING, 1);
             uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
@@ -387,7 +502,7 @@ final class CameraEngine {
                 int tag = rotation == 90 ? ExifInterface.ORIENTATION_ROTATE_90 : rotation == 180 ? ExifInterface.ORIENTATION_ROTATE_180 : rotation == 270 ? ExifInterface.ORIENTATION_ROTATE_270 : ExifInterface.ORIENTATION_NORMAL;
                 exif.setAttribute(ExifInterface.TAG_ORIENTATION, Integer.toString(tag));
                 exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new Date(now)));
-                exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Shizuka Camera 1.1.0");
+                exif.setAttribute(ExifInterface.TAG_SOFTWARE, "SantiCam 1.3.0");
                 exif.saveAttributes();
             }
             ContentValues publish = new ContentValues(); publish.put(MediaStore.Images.Media.IS_PENDING, 0);
@@ -426,5 +541,5 @@ final class CameraEngine {
         if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
         request = null;
     }
-    private void closeCamera() { closeSession(); if (device != null) { device.close(); device = null; } }
+    private void closeCamera() { if (recorder != null || videoUri != null) finishVideo(false, null); closeSession(); if (device != null) { device.close(); device = null; } }
 }
