@@ -2,6 +2,15 @@
 
 Pixel 9a向けカメラアプリの保管・調査用リポジトリです。現行アプリの表示名は「SantiCam」で、Androidパッケージ名は `jp.dharmainsight.shizukacamera` です。
 
+## 1.4.0：QRコードの自動認識
+
+- カメラプレビューにQRコードが映ると、URL（HTTP/HTTPSのみ）を自動で検出し、映像内にリンク先を表示。
+- 「開く」でブラウザに移動、「コピー」でURLをコピー。誤操作・不審なリンクに備えて自動では開きません。
+- カメラのY（輝度）画像を約450ms間隔で縮小してバックグラウンド解析。写真撮影・録画・ズームの既存動作を維持。
+- 録画中およびロック画面のセキュア起動中はQR読み取りを停止。コードが見えなくなったら約3秒後に表示を消去。
+- [ZXing Core 3.5.4](https://central.sonatype.com/artifact/com.google.zxing/core/3.5.4)（Apache-2.0）を使用。ビルド時にMaven Centralから取得してSHA-1を照合します。APKに通信権限を追加せず、読み取り時の通信も行いません。
+- Androidバージョン：versionCode 5／versionName 1.4.0。アプリIDと元の署名鍵は変更しません。
+
 ## 1.3.0：撮影操作
 
 - ランチャー・ヘッダー・診断画面の表示名をSantiCamに統一。
@@ -22,14 +31,14 @@ Pixel 9a向けカメラアプリの保管・調査用リポジトリです。現
 
 ## 署名済みAPKの生成とPixel 9aへの上書き更新
 
-**更新用APKはGitHub Actionsの手動実行で生成します。** 通常の `Android compile and unit tests` が作る未署名APKはインストールできません。既存1.2.0を更新するには、旧版と同じ署名鍵が必須です。
+**更新用APKはGitHub Actionsの手動実行で生成します。** 1.4.0のQR機能も同じ手順で配布します。 通常の `Android compile and unit tests` が作る未署名APKはインストールできません。既存1.2.0を更新するには、旧版と同じ署名鍵が必須です。
 
 1. 最新コードと `.github/workflows/signed-update.yml` を `main` にマージしておきます。
 2. GitHubのリポジトリ **Settings → Secrets and variables → Actions → New repository secret** で、次の2つを登録します（秘密鍵やパスワードはGit/issue/チャットに貼らないこと）。
    - `SANTICAM_KEYSTORE_B64`：以前の更新で使った **元の** `shizuka-release.p12` のBase64文字列。Linuxなら `base64 -w0 shizuka-release.p12`、PowerShellなら `[Convert]::ToBase64String([IO.File]::ReadAllBytes('shizuka-release.p12'))` で生成。
    - `SANTICAM_KEYSTORE_PASSWORD`：以前の `key.pass` の内容（パスワードそのもの）。
 3. GitHub **Actions → Build signed Android update APK → Run workflow → Branch: main → Run workflow** を選びます。
-4. 実行が成功したら、その実行画面の **Artifacts → `SantiCam-1.3.0-signed-update`** をダウンロード。ZIPを解凍し、中の `SantiCam-1.3.0.apk` をPixelへ保存します（新しい版ではファイル名が自動更新されます）。
+4. 実行が成功したら、その実行画面の **Artifacts → `SantiCam-1.4.0-signed-update`** をダウンロード。ZIPを解凍し、中の `SantiCam-1.4.0.apk` をPixelへ保存します（新しい版ではファイル名が自動更新されます）。
 5. Pixelの「Files」からAPKを開いて **更新／インストール** を選びます。**旧版をアンインストールしないでください。** 未知のアプリのインストール許可を求められた場合は、信頼できる取得元であることを確認して許可します。
 
 署名ジョブは `main` の手動実行に限定し、PRには鍵を渡しません。ジョブ内の秘密鍵は一時領域に復元して終了時に削除します。元の署名証明書SHA-256（`2048e9fb...`）およびパッケージID・versionCodeを検証し、不一致ならアップロードを中止します。APKはActions成果物に30日間保管されますが、Gitの履歴には含めません。
