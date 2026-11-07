@@ -6,6 +6,8 @@ import android.app.KeyguardManager;
 import android.provider.MediaStore;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -54,7 +56,9 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     private FrameLayout viewfinder;
     private Overlay overlay;
     private TextView status, resolution, timerButton, gateTitle, gateBody, gateAction, evLabel;
-    private LinearLayout gate, exposureRow, footer;
+    private LinearLayout gate, exposureRow, footer, qrCard;
+    private TextView qrAddress;
+    private String qrUrl;
     private IconButton gridButton, torchButton, switchButton, galleryButton, shutter;
     private TextView[] zoomButtons;
     private SeekBar exposure, zoomSlider;
@@ -68,6 +72,8 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     private boolean secureSession;
     private Uri lastPhoto;
     private Bitmap lastThumbnail;
+
+    private final Runnable clearQrLater = () -> hideQr();
 
     private final Runnable beginHoldVideo = () -> {
         if (!shutterHeld || !ready || busy) return;
@@ -127,6 +133,8 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         setIntent(intent);
         refreshLaunchSecurity();
         DiagnosticActivity.recordCameraIntent(this, intent);
+        engine.setQrEnabled(!secureSession);
+        if (secureSession) hideQr();
     }
 
     private void buildUi() {
@@ -168,6 +176,26 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         overlay = new Overlay(); viewfinder.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
         resolution = text("", 10, WHITE); resolution.setPadding(dp(12), dp(7), dp(12), dp(7)); resolution.setBackground(shape(0x990C100D, 16));
         FrameLayout.LayoutParams resolutionParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START); resolutionParams.setMargins(dp(14), dp(14), 0, 0); viewfinder.addView(resolution, resolutionParams);
+        qrCard = new LinearLayout(this); qrCard.setOrientation(LinearLayout.VERTICAL);
+        qrCard.setPadding(dp(14), dp(10), dp(14), dp(10));
+        qrCard.setBackground(shape(0xEE202B24, 16)); qrCard.setVisibility(View.GONE);
+        TextView qrTitle = text("QRコード · リンク先", 11, ACCENT); qrCard.addView(qrTitle);
+        qrAddress = text("", 12, WHITE); qrAddress.setMaxLines(2);
+        qrAddress.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        qrAddress.setTextDirection(View.TEXT_DIRECTION_LTR); qrAddress.setPadding(0, dp(4), 0, dp(6));
+        qrCard.addView(qrAddress);
+        LinearLayout qrActions = row(); qrActions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView qrCopy = chip("コピー"); qrCopy.setContentDescription("QRコードのリンクをコピー");
+        qrCopy.setOnClickListener(v -> copyQrLink());
+        qrActions.addView(qrCopy, new LinearLayout.LayoutParams(dp(82), dp(38)));
+        TextView qrOpen = chip("開く"); qrOpen.setTextColor(BACKGROUND); qrOpen.setBackground(ripple(ACCENT, 16));
+        qrOpen.setContentDescription("QRコードのリンクをブラウザで開く");
+        LinearLayout.LayoutParams openParams = new LinearLayout.LayoutParams(dp(82), dp(38));
+        openParams.setMargins(dp(8), 0, 0, 0);
+        qrActions.addView(qrOpen, openParams); qrOpen.setOnClickListener(v -> openQrLink());
+        qrCard.addView(qrActions);
+        FrameLayout.LayoutParams qrParams = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        qrParams.setMargins(dp(12), 0, dp(12), dp(12)); viewfinder.addView(qrCard, qrParams);
         gate = new LinearLayout(this); gate.setOrientation(LinearLayout.VERTICAL); gate.setGravity(Gravity.CENTER); gate.setPadding(dp(24), dp(12), dp(24), dp(12)); gate.setBackgroundColor(0xF5101411);
         gateTitle = text("カメラを準備しています", 18, WHITE); gateTitle.setGravity(Gravity.CENTER);
         gateBody = text("", 13, MUTED); gateBody.setGravity(Gravity.CENTER); gateBody.setPadding(0, dp(12), 0, dp(18));
@@ -311,7 +339,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     }
     @Override protected void onPause() {
         ui.removeCallbacks(beginHoldVideo); shutterHeld = false; videoActive = false; busy = false;
-        resumed = false; ready = starting = false; cancelCountdown(); orientationListener.disable(); engine.stop(); updateControls(); super.onPause();
+        resumed = false; ready = starting = false; hideQr(); cancelCountdown(); orientationListener.disable(); engine.stop(); updateControls(); super.onPause();
         if (secureSession) finish();
     }
     @Override protected void onDestroy() {
@@ -329,10 +357,10 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
             showGate("カメラを使えるようにする", "撮影のため、カメラの使用を許可してください。\n写真は端末内に保存されます。", "カメラを許可"); return;
         }
         if (!texture.isAvailable()) return;
-        starting = true; ready = false; torch = false; zoom = 1;
+        starting = true; ready = false; torch = false; zoom = 1; hideQr();
         torchButton.active = false; torchButton.invalidate(); updateControls();
         showGate("カメラを準備しています", "", null);
-        engine.start(texture.getSurfaceTexture(), front);
+        engine.start(texture.getSurfaceTexture(), front, !secureSession);
     }
 
     private void requestCameraPermission() {
@@ -365,9 +393,48 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
         transformPreview(); updateControls();
     }
 
+    @Override public void onQrUrl(String url) {
+        if (!resumed || !ready || busy || secureSession || isDestroyed()) return;
+        String accepted = QrLinkPolicy.accept(url);
+        if (accepted == null) return;
+        if (!accepted.equals(qrUrl)) {
+            qrUrl = accepted; qrAddress.setText(accepted);
+            qrAddress.setContentDescription("QRコードのリンク先 " + accepted);
+        }
+        qrCard.setVisibility(View.VISIBLE);
+        ui.removeCallbacks(clearQrLater); ui.postDelayed(clearQrLater, 3000);
+    }
+
+    private void hideQr() {
+        ui.removeCallbacks(clearQrLater);
+        qrUrl = null;
+        if (qrCard != null) qrCard.setVisibility(View.GONE);
+    }
+
+    private void openQrLink() {
+        if (qrUrl == null || !resumed || !ready || protectPersonalContent()) return;
+        String accepted = QrLinkPolicy.accept(qrUrl);
+        if (accepted == null) { hideQr(); return; }
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(accepted))
+                .addCategory(Intent.CATEGORY_BROWSABLE));
+        } catch (ActivityNotFoundException | SecurityException failure) {
+            toast("リンクを開けません。コピーしてブラウザに貼り付けてください");
+        }
+    }
+
+    private void copyQrLink() {
+        if (qrUrl == null || protectPersonalContent()) return;
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("SantiCam QR", qrUrl));
+            toast("リンクをコピーしました");
+        }
+    }
+
     @Override public void onStatus(String message, boolean error) {
         if (!resumed || isDestroyed()) return;
-        if (error) { ui.removeCallbacks(beginHoldVideo); shutterHeld = false; videoActive = false; ready = starting = false; cancelCountdown(); busy = false; }
+        if (error) { ui.removeCallbacks(beginHoldVideo); shutterHeld = false; videoActive = false; ready = starting = false; hideQr(); cancelCountdown(); busy = false; }
         if (!ready || error) showGate(error ? "カメラを確認してください" : message, error ? message : "", error ? "再接続" : null);
         status.setText(message); updateControls();
     }
@@ -394,7 +461,7 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
             prefs.edit().putBoolean("audioAsked", true).apply();
             requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 11); return;
         }
-        videoActive = true; busy = true;
+        videoActive = true; busy = true; hideQr();
         status.setText(audio ? "動画を準備中… 離して終了" : "無音動画を準備中… 離して終了");
         updateControls(); engine.startVideo(deviceOrientation, audio);
     }
@@ -481,8 +548,8 @@ public class MainActivity extends Activity implements CameraEngine.Listener {
     }
     private void showAbout() {
         if (protectPersonalContent()) return;
-        new AlertDialog.Builder(this).setTitle("SantiCam 1.3.0")
-            .setMessage("シャッター音なしで写真を残すカメラです。\n\n・撮影中の映像から写真を保存\n・保存先：DCIM / SantiCam\n・前後カメラ、ズーム、明るさ、タイマー\n・短押しで写真、長押しで動画、離して保存\n・動画中は上下スワイプでズーム\n・倍率ボタンの左右スライド／スライダーでズーム\n・音量キーでも撮影できます\n・自撮り写真は左右反転せず保存\n\n通信・広告・位置情報は使用しません。動画の音声にはマイクの許可が必要です。未許可なら無音で録画します。画面を離れるとカメラは停止します。\n\n画質と最大解像度は端末により異なります。標準カメラのHDR・夜景処理には対応していません。端末固有の動作音については実機で確認してください。")
+        new AlertDialog.Builder(this).setTitle("SantiCam 1.4.0")
+            .setMessage("シャッター音なしで写真を残すカメラです。\n\n・撮影中の映像から写真を保存\n・保存先：DCIM / SantiCam\n・前後カメラ、ズーム、明るさ、タイマー\n・短押しで写真、長押しで動画、離して保存\n・動画中は上下スワイプでズーム\n・倍率ボタンの左右スライド／スライダーでズーム\n・音量キーでも撮影できます\n・QRコードのURLを自動表示（タップで開く／コピー）\n・自撮り写真は左右反転せず保存\n\n通信・広告・位置情報は使用しません。動画の音声にはマイクの許可が必要です。未許可なら無音で録画します。画面を離れるとカメラは停止します。\n\n画質と最大解像度は端末により異なります。標準カメラのHDR・夜景処理には対応していません。端末固有の動作音については実機で確認してください。")
             .setNeutralButton("電源ボタンの起動診断", (dialog, which) -> {
                 if (!protectPersonalContent()) startActivity(new Intent(this, DiagnosticActivity.class));
             })

@@ -29,6 +29,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Range;
 import android.util.Rational;
@@ -47,6 +48,7 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.RejectedExecutionException;
 
 final class CameraEngine {
     interface Listener {
@@ -55,6 +57,7 @@ final class CameraEngine {
         void onVideo(Uri uri, String error);
         void onStatus(String text, boolean error);
         void onPhoto(Uri uri, Bitmap thumbnail, String error);
+        void onQrUrl(String url);
     }
 
     static final class Info {
@@ -75,7 +78,9 @@ final class CameraEngine {
     private final HandlerThread thread = new HandlerThread("SantiCam");
     private final Handler worker;
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
+    private final ExecutorService scanner = Executors.newSingleThreadExecutor();
     private final AtomicBoolean saving = new AtomicBoolean();
+    private final AtomicBoolean scanPending = new AtomicBoolean();
     private final CameraManager manager;
     private CameraDevice device;
     private CameraCaptureSession session;
@@ -95,7 +100,8 @@ final class CameraEngine {
     private MediaRecorder recorder;
     private ParcelFileDescriptor videoFile;
     private Uri videoUri;
-    private boolean recording;
+    private boolean recording, qrEnabled;
+    private long lastQrSample;
 
     CameraEngine(Context context, Listener listener) {
         this.context = context.getApplicationContext(); this.listener = listener;
@@ -103,11 +109,12 @@ final class CameraEngine {
         thread.start(); worker = new Handler(thread.getLooper());
     }
 
-    void start(SurfaceTexture output, boolean useFront) {
+    void start(SurfaceTexture output, boolean useFront, boolean scanQr) {
         if (destroyed) return;
         worker.post(() -> {
             ++generation; closeCamera();
             texture = output; front = useFront; zoom = 1; torch = false;
+            qrEnabled = scanQr; lastQrSample = 0;
             int token = generation;
             emitStatus("カメラを準備しています", false);
             try {
@@ -153,6 +160,10 @@ final class CameraEngine {
                 closeCamera(); emitStatus("カメラを開けません。権限と端末のカメラ設定を確認してください", true);
             }
         });
+    }
+
+    void setQrEnabled(boolean enabled) {
+        if (!destroyed) worker.post(() -> qrEnabled = enabled);
     }
 
     private String selectCamera(boolean useFront) throws CameraAccessException {
@@ -258,6 +269,7 @@ final class CameraEngine {
                 Info info = new Info(frameSize, sensorRotation, front, flashAvailable, switchable, maxZoom, min, max);
                 main.post(() -> { if (!destroyed) listener.onReady(info); });
             }
+            if (qrEnabled && !saving.get()) maybeScanQr(image, token, configToken);
             if (pendingOrientation < 0) return;
             int rotation = CameraMath.jpegRotation(sensorRotation, pendingOrientation, front);
             pendingOrientation = -1;
@@ -271,6 +283,43 @@ final class CameraEngine {
             writer.execute(() -> save(bytes, width, height, rotation));
         } catch (RuntimeException error) {
             if (saving.get()) { pendingOrientation = -1; saving.set(false); photoResult(null, null, "写真を読み取れませんでした。もう一度撮影してください"); }
+        }
+    }
+
+    // Read a compact luminance copy every ~450 ms, never decoding on the camera thread.
+    private void maybeScanQr(Image image, int token, int configToken) {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastQrSample < 450 || !scanPending.compareAndSet(false, true)) return;
+        lastQrSample = now;
+        final QrFrameSampler.Frame frame;
+        try {
+            Rect area = image.getCropRect();
+            Image.Plane y = image.getPlanes()[0];
+            frame = QrFrameSampler.sample(y.getBuffer(), y.getRowStride(), y.getPixelStride(),
+                area.left, area.top, area.width(), area.height());
+        } catch (RuntimeException failure) {
+            scanPending.set(false); return;
+        }
+        try {
+            scanner.execute(() -> {
+                try {
+                    String link = QrLinkPolicy.accept(QrScanner.decode(frame));
+                    if (link != null && !destroyed) {
+                        worker.post(() -> {
+                            if (token == generation && configToken == configuration && qrEnabled &&
+                                !destroyed && recorder == null) {
+                                main.post(() -> { if (!destroyed) listener.onQrUrl(link); });
+                            }
+                        });
+                    }
+                } catch (RuntimeException ignored) {
+                    // QR decode failure must not affect photography.
+                } finally {
+                    scanPending.set(false);
+                }
+            });
+        } catch (RejectedExecutionException shutdown) {
+            scanPending.set(false);
         }
     }
 
@@ -502,7 +551,7 @@ final class CameraEngine {
                 int tag = rotation == 90 ? ExifInterface.ORIENTATION_ROTATE_90 : rotation == 180 ? ExifInterface.ORIENTATION_ROTATE_180 : rotation == 270 ? ExifInterface.ORIENTATION_ROTATE_270 : ExifInterface.ORIENTATION_NORMAL;
                 exif.setAttribute(ExifInterface.TAG_ORIENTATION, Integer.toString(tag));
                 exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new Date(now)));
-                exif.setAttribute(ExifInterface.TAG_SOFTWARE, "SantiCam 1.3.0");
+                exif.setAttribute(ExifInterface.TAG_SOFTWARE, "SantiCam 1.4.0");
                 exif.saveAttributes();
             }
             ContentValues publish = new ContentValues(); publish.put(MediaStore.Images.Media.IS_PENDING, 0);
@@ -531,10 +580,10 @@ final class CameraEngine {
     void stop() { if (!destroyed) worker.post(() -> { ++generation; closeCamera(); }); }
     void destroy() {
         destroyed = true;
-        worker.post(() -> { ++generation; closeCamera(); thread.quitSafely(); writer.shutdown(); });
+        worker.post(() -> { ++generation; closeCamera(); thread.quitSafely(); writer.shutdown(); scanner.shutdown(); });
     }
     private void closeSession() {
-        ++configuration; ++focusGeneration; frameSeen = false;
+        ++configuration; ++focusGeneration; frameSeen = false; lastQrSample = 0;
         if (pendingOrientation >= 0) { pendingOrientation = -1; saving.set(false); photoResult(null, null, "撮影を中止しました"); }
         if (session != null) { session.close(); session = null; }
         if (reader != null) { reader.close(); reader = null; }
